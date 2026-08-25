@@ -90,6 +90,31 @@ pub fn background_executor() -> BackgroundExecutor {
     current_platform(true).background_executor()
 }
 
+// PATCH (twigpui): keep drawing while occluded.
+//
+// Upstream gpui only drives frames from a CVDisplayLink, and only while the
+// window is `NSWindowOcclusionStateVisible`. A window opened while the screen
+// is locked is occluded from its first moment and the OS refuses to create a
+// display link for a sleeping display (CVDisplayLinkCreateWithActiveCGDisplays
+// returns -6661), so such a window never draws a single frame and a window
+// capture of it is black. That is the wrong trade for a fixture window whose
+// only purpose is to be captured. With this switch on, macOS windows start
+// their display link regardless of occlusion and fall back to a 30Hz timer
+// when no display link can be made. Off (the default) is upstream behavior.
+static DRAW_WHILE_OCCLUDED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// PATCH (twigpui): make every macOS window keep drawing while occluded,
+/// including while the screen is locked. See [`draws_while_occluded`].
+pub fn set_draw_while_occluded(enabled: bool) {
+    DRAW_WHILE_OCCLUDED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// PATCH (twigpui): whether [`set_draw_while_occluded`] has been turned on.
+pub fn draws_while_occluded() -> bool {
+    DRAW_WHILE_OCCLUDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
     Rc::new(MacPlatform::new(headless))

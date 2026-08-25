@@ -14,7 +14,19 @@ use util::ResultExt;
 pub struct DisplayLink {
     display_link: Option<sys::DisplayLink>,
     frame_requests: dispatch_source_t,
+    // PATCH (twigpui): a timer thread that stands in for the CVDisplayLink
+    // when the OS refuses to create one (locked screen, sleeping display).
+    // Only ever populated while `crate::draws_while_occluded()`.
+    // See `crate::set_draw_while_occluded`.
+    fallback: Option<(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::thread::JoinHandle<()>,
+    )>,
 }
+
+/// PATCH (twigpui): how often the fallback timer asks for a frame. Half the
+/// usual display rate is plenty for a window nobody is looking at.
+const FALLBACK_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 
 impl DisplayLink {
     pub fn new(
@@ -52,15 +64,26 @@ impl DisplayLink {
             );
             dispatch_source_set_event_handler_f(frame_requests, Some(callback));
 
-            let display_link = sys::DisplayLink::new(
+            // PATCH (twigpui): without the switch a failure here is an error,
+            // as upstream. With it, `None` means "drive frames from the
+            // fallback timer instead".
+            let display_link = match sys::DisplayLink::new(
                 display_id,
                 display_link_callback,
                 frame_requests as *mut c_void,
-            )?;
+            ) {
+                Ok(display_link) => Some(display_link),
+                Err(error) if crate::draws_while_occluded() => {
+                    log::info!("no display link ({error:#}); driving frames from a timer");
+                    None
+                }
+                Err(error) => return Err(error),
+            };
 
             Ok(Self {
-                display_link: Some(display_link),
+                display_link,
                 frame_requests,
+                fallback: None,
             })
         }
     }
@@ -70,17 +93,41 @@ impl DisplayLink {
             dispatch_resume(crate::dispatch_sys::dispatch_object_t {
                 _ds: self.frame_requests,
             });
-            self.display_link.as_mut().unwrap().start()?;
+        }
+        if let Some(display_link) = self.display_link.as_mut() {
+            unsafe { display_link.start()? };
+        } else if self.fallback.is_none() {
+            // PATCH (twigpui): merge into the same dispatch source the
+            // CVDisplayLink callback would, so the frame still runs on the
+            // main queue exactly as it does upstream.
+            let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let flag = running.clone();
+            let frame_requests = self.frame_requests as usize;
+            let thread = std::thread::spawn(move || {
+                while flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(FALLBACK_FRAME);
+                    unsafe { dispatch_source_merge_data(frame_requests as dispatch_source_t, 1) };
+                }
+            });
+            self.fallback = Some((running, thread));
         }
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<()> {
+        if let Some((running, thread)) = self.fallback.take() {
+            // Joined so the thread can never touch a dispatch source that
+            // `Drop` has already cancelled.
+            running.store(false, std::sync::atomic::Ordering::Relaxed);
+            let _ = thread.join();
+        }
         unsafe {
             dispatch_suspend(crate::dispatch_sys::dispatch_object_t {
                 _ds: self.frame_requests,
             });
-            self.display_link.as_mut().unwrap().stop()?;
+        }
+        if let Some(display_link) = self.display_link.as_mut() {
+            unsafe { display_link.stop()? };
         }
         Ok(())
     }

@@ -475,13 +475,16 @@ impl MacWindowState {
 
     fn start_display_link(&mut self) {
         self.stop_display_link();
-        unsafe {
-            if !self
-                .native_window
-                .occlusionState()
-                .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-            {
-                return;
+        // PATCH (twigpui): see `crate::set_draw_while_occluded`.
+        if !crate::draws_while_occluded() {
+            unsafe {
+                if !self
+                    .native_window
+                    .occlusionState()
+                    .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
+                {
+                    return;
+                }
             }
         }
         let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
@@ -858,6 +861,14 @@ impl MacWindow {
             //  is different from the primary screen.
             NSWindow::setFrameTopLeftPoint_(native_window, window_rect.origin);
             window.0.lock().move_traffic_light();
+
+            // PATCH (twigpui): a window opened while the screen is locked
+            // gets no occlusion or screen-change callback that would start
+            // its display link, so start it here.
+            // See `crate::set_draw_while_occluded`.
+            if crate::draws_while_occluded() {
+                window.0.lock().start_display_link();
+            }
 
             pool.drain();
 
@@ -1914,6 +1925,9 @@ extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
             .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
         {
             lock.move_traffic_light();
+            lock.start_display_link();
+        } else if crate::draws_while_occluded() {
+            // PATCH (twigpui): see `crate::set_draw_while_occluded`.
             lock.start_display_link();
         } else {
             lock.stop_display_link();
