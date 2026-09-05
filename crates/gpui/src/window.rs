@@ -1791,6 +1791,14 @@ impl Window {
             .set_background_appearance(background_appearance);
     }
 
+    /// Keeps the window above normal windows of every application (macOS:
+    /// `NSFloatingWindowLevel`), or puts it back among them. Unlike
+    /// `WindowKind`, this can be changed after the window is open. A no-op on
+    /// platforms without such a level.
+    pub fn set_floating(&self, floating: bool) {
+        self.platform_window.set_floating(floating);
+    }
+
     /// Mark the window as dirty at the platform level.
     pub fn set_window_edited(&mut self, edited: bool) {
         self.platform_window.set_edited(edited);

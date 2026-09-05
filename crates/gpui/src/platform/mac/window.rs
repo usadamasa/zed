@@ -65,6 +65,8 @@ const NSWindowStyleMaskNonactivatingPanel: NSWindowStyleMask =
 #[allow(non_upper_case_globals)]
 const NSNormalWindowLevel: NSInteger = 0;
 #[allow(non_upper_case_globals)]
+const NSFloatingWindowLevel: NSInteger = 3;
+#[allow(non_upper_case_globals)]
 const NSPopUpWindowLevel: NSInteger = 101;
 #[allow(non_upper_case_globals)]
 const NSTrackingMouseEnteredAndExited: NSUInteger = 0x01;
@@ -1264,6 +1266,18 @@ impl PlatformWindow for MacWindow {
     }
 
     fn set_app_id(&mut self, _app_id: &str) {}
+
+    fn set_floating(&self, floating: bool) {
+        let this = self.0.as_ref().lock();
+        let level = if floating {
+            NSFloatingWindowLevel
+        } else {
+            NSNormalWindowLevel
+        };
+        unsafe {
+            this.native_window.setLevel_(level);
+        }
+    }
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut this = self.0.as_ref().lock();
